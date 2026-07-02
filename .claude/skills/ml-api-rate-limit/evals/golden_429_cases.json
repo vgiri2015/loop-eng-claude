@@ -1,0 +1,131 @@
+{
+  "description": "Golden regression cases for the ml-api-rate-limit skill. Each case is a historical 429 incident with the expected classification, diagnosis, and mitigation the loops should converge on. Loop 6 (Learning) appends new resolved incidents here.",
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "case-001-burst-cron-stampede",
+      "title": "Nightly batch job triggers 429 bursts",
+      "input": {
+        "ticket": "We get bursts of HTTP 429 from the Claude API every night around 02:00. During the day everything is fine.",
+        "signals": {
+          "request_rate_rpm": 120,
+          "peak_rpm": 900,
+          "tokens_per_minute": 40000,
+          "retry_after_seconds": [2, 3, 2],
+          "burst_ratio": 7.5,
+          "by_region": {"us-east-1": 340},
+          "sdk_version": "anthropic-python 0.39.0"
+        }
+      },
+      "expected": {
+        "incident_type": "API Rate Limiting",
+        "subtype": "burst_quota",
+        "severity": "P2",
+        "top_root_cause": "Burst traffic exceeded quota",
+        "playbook": "burst_quota.md",
+        "immediate_mitigation": ["exponential backoff with jitter", "client-side rate limiter", "respect Retry-After"],
+        "long_term_remediation": ["rate-shape batch job", "add jitter to cron"]
+      }
+    },
+    {
+      "id": "case-002-retry-storm-no-backoff",
+      "title": "Fixed-interval retries amplify a transient throttle",
+      "input": {
+        "ticket": "After a brief slowdown, 429 errors exploded and never recovered until we restarted the service.",
+        "signals": {
+          "request_rate_rpm": 300,
+          "peak_rpm": 2600,
+          "tokens_per_minute": 55000,
+          "retry_after_seconds": [1, 1, 1, 1],
+          "attempts_per_logical_request": 9,
+          "retry_policy": "fixed 200ms, no jitter, unlimited",
+          "burst_ratio": 8.6,
+          "sdk_version": "custom http client"
+        }
+      },
+      "expected": {
+        "incident_type": "API Rate Limiting",
+        "subtype": "retry_storm",
+        "severity": "P1",
+        "top_root_cause": "Retry storm",
+        "playbook": "retry_storm.md",
+        "immediate_mitigation": ["cap retry attempts", "exponential backoff with jitter", "reduce concurrency", "circuit breaker"],
+        "long_term_remediation": ["standardize retry policy", "global concurrency limiter"]
+      }
+    },
+    {
+      "id": "case-003-token-quota-large-context",
+      "title": "Large contexts blow the TPM limit while RPM is low",
+      "input": {
+        "ticket": "We only send about 20 requests per minute but still hit 429s citing token limits.",
+        "signals": {
+          "request_rate_rpm": 20,
+          "peak_rpm": 24,
+          "tokens_per_minute": 210000,
+          "avg_input_tokens": 8000,
+          "max_tokens": 4096,
+          "retry_after_seconds": [30, 45],
+          "burst_ratio": 1.2,
+          "sdk_version": "anthropic-python 0.39.0"
+        }
+      },
+      "expected": {
+        "incident_type": "API Rate Limiting",
+        "subtype": "token_quota",
+        "severity": "P2",
+        "top_root_cause": "Token-per-minute limit exceeded",
+        "playbook": "token_quota.md",
+        "immediate_mitigation": ["lower max_tokens", "trim context", "reduce concurrency of token-heavy calls"],
+        "long_term_remediation": ["token-aware rate limiter", "cache/summarize long context", "request TPM increase"]
+      }
+    },
+    {
+      "id": "case-004-regional-throttling",
+      "title": "Single region throttled while others are healthy",
+      "input": {
+        "ticket": "Our us-west traffic is throwing 429s but eu-central is totally fine on the same account.",
+        "signals": {
+          "request_rate_rpm": 150,
+          "peak_rpm": 180,
+          "tokens_per_minute": 60000,
+          "retry_after_seconds": [10, 12],
+          "burst_ratio": 1.2,
+          "by_region": {"us-west-2": 410, "eu-central-1": 0},
+          "sdk_version": "anthropic-typescript 0.30.0"
+        }
+      },
+      "expected": {
+        "incident_type": "API Rate Limiting",
+        "subtype": "regional_throttling",
+        "severity": "P2",
+        "top_root_cause": "Regional throttling",
+        "playbook": "regional_throttling.md",
+        "immediate_mitigation": ["fail over to healthy region", "respect Retry-After", "lower concurrency on affected region"],
+        "long_term_remediation": ["multi-region routing", "per-region concurrency caps"]
+      }
+    },
+    {
+      "id": "case-005-not-rate-limit-auth",
+      "title": "Negative case: 401 misreported as rate limiting",
+      "input": {
+        "ticket": "Requests are failing, we think it's rate limiting.",
+        "signals": {
+          "request_rate_rpm": 5,
+          "peak_rpm": 6,
+          "tokens_per_minute": 1200,
+          "status_breakdown": {"401": 88},
+          "retry_after_seconds": [],
+          "sdk_version": "anthropic-python 0.39.0"
+        }
+      },
+      "expected": {
+        "incident_type": "Not Rate Limiting",
+        "subtype": "authentication",
+        "severity": "P3",
+        "top_root_cause": "Invalid or expired API key",
+        "playbook": null,
+        "note": "Loop 1 must classify this OUT of scope and stop. No 429s present; failures are 401."
+      }
+    }
+  ]
+}
